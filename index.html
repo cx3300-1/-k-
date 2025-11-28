@@ -1,4 +1,4 @@
-
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
@@ -9342,7 +9342,82 @@ db.version(53).stores({ // 版本号从 52 升级到 53
 
 
 window.db = db;
+// ==========================================
+  // ▼▼▼ 新增：跨应用数据库同步监听逻辑 ▼▼▼
+  // ==========================================
+  window.addEventListener('message', async (event) => {
+    const action = event.data.action;
 
+    // 1. 导出逻辑：有人找我要数据 (App -> Launcher)
+    if (action === 'EXPORT_DATA') {
+      try {
+        const exportData = {};
+        // 遍历当前数据库的所有表
+        for (const table of db.tables) {
+          exportData[table.name] = await table.toArray();
+        }
+        console.log(`[同步] 导出成功，包含 ${Object.keys(exportData).length} 张表`);
+        
+        // 发送回父页面 (启动器)
+        window.parent.postMessage({
+          type: 'DATA_EXPORT_SUCCESS',
+          payload: JSON.stringify(exportData), // 序列化为字符串
+          targetId: event.data.targetId // 把目标ID带回去，方便启动器知道发给谁
+        }, '*');
+
+      } catch (error) {
+        console.error('[同步] 导出失败:', error);
+        alert('导出数据出错，请检查控制台');
+      }
+    }
+
+    // 2. 导入逻辑：有人给我数据让我存 (Launcher -> App)
+    if (action === 'IMPORT_DATA') {
+      try {
+        const importData = JSON.parse(event.data.payload);
+        const myTableNames = db.tables.map(t => t.name); // 获取我自己所有的表名
+        const incomingTableNames = Object.keys(importData); // 对方传来的表名
+
+        console.log('[同步] 开始导入数据...');
+
+        // 开启事务进行写入
+        await db.transaction('rw', db.tables, async () => {
+          for (const tableName of incomingTableNames) {
+            // 【策略】：只有当我自己也有这张表时 (公共表)，才进行覆盖
+            if (myTableNames.includes(tableName)) {
+              console.log(`[同步] 覆盖公共表: ${tableName} (${importData[tableName].length} 条数据)`);
+              
+              // A. 清空旧数据
+              await db.table(tableName).clear();
+              
+              // B. 写入新数据
+              if (importData[tableName].length > 0) {
+                await db.table(tableName).bulkAdd(importData[tableName]);
+              }
+            } else {
+              // 对方有但我没有的表 -> 忽略 (防止版本不兼容报错)
+              console.warn(`[同步] 忽略对方独有表: ${tableName}`);
+            }
+          }
+          
+          // 我有但对方没有的表 -> 循环没跑到 -> 自动保留原样 (满足你的需求)
+        });
+
+        // 通知父页面成功
+        window.parent.postMessage({ type: 'DATA_IMPORT_SUCCESS' }, '*');
+        
+        // 刷新页面以加载新数据
+        setTimeout(() => location.reload(), 500);
+
+      } catch (error) {
+        console.error('[同步] 导入失败:', error);
+        alert('同步数据写入失败: ' + error.message);
+      }
+    }
+  });
+  // ==========================================
+  // ▲▲▲ 结束：跨应用数据库同步监听逻辑 ▲▲▲
+  // ==========================================
 // ===================================================================
 // 3. 所有功能函数定义
 // ===================================================================
